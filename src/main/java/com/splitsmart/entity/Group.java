@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.ArrayList;
 
 @Entity
-@Table(name = "groups")  
+@Table(name = "split_groups")
 public class Group {
 
     @Id

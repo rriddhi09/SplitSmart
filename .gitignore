@@ -1,6 +1,6 @@
 # Maven build output
 target/
-
+${project.build.directory}/
 # IDE
 .idea/
 *.iml
