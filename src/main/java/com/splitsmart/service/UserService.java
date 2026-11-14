@@ -22,8 +22,10 @@ public class UserService {
     }
 
     public User registerUser(User user) {
+        if (userRepository.existsByEmail(user.getEmail())) {
+            throw new RuntimeException("Email already registered");
+        }
         user.setPassword(passwordEncoder.encode(user.getPassword()));
-
         // A public registration endpoint must never let clients choose admin roles.
         user.setRole("ROLE_USER");
 
