@@ -1,187 +1,196 @@
 package com.splitsmart.service;
 
-import java.util.List;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
-import com.splitsmart.dto.SettlementResponse;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-
 import com.splitsmart.dto.ExpenseRequest;
+import com.splitsmart.dto.SettlementResponse;
 import com.splitsmart.entity.Expense;
 import com.splitsmart.entity.Group;
 import com.splitsmart.entity.Split;
 import com.splitsmart.entity.User;
 import com.splitsmart.repository.ExpenseRepository;
-import com.splitsmart.repository.GroupRepository;
 import com.splitsmart.repository.SplitRepository;
 import com.splitsmart.repository.UserRepository;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
 
 @Service
 public class ExpenseService {
 
-    @Autowired
-    private ExpenseRepository expenseRepository;
+    private final ExpenseRepository expenseRepository;
+    private final SplitRepository splitRepository;
+    private final UserRepository userRepository;
+    private final GroupAccessService groupAccessService;
 
-    @Autowired
-    private SplitRepository splitRepository;
+    public ExpenseService(ExpenseRepository expenseRepository,
+                          SplitRepository splitRepository,
+                          UserRepository userRepository,
+                          GroupAccessService groupAccessService) {
+        this.expenseRepository = expenseRepository;
+        this.splitRepository = splitRepository;
+        this.userRepository = userRepository;
+        this.groupAccessService = groupAccessService;
+    }
 
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    private GroupRepository groupRepository;
-
+    @Transactional
+    @PreAuthorize("@groupAccessService.isMember(#request.groupId, authentication.name)")
     public Expense addExpense(ExpenseRequest request) {
+        validateRequest(request);
+        Group group = groupAccessService.requireMember(request.getGroupId());
+        User currentUser = groupAccessService.currentUser();
+        User paidByUser = findUser(request.getPaidByUserId());
+        requireMember(group, paidByUser, "The payer must be a group member");
 
-        User paidByUser = userRepository.findById(request.getPaidByUserId()).orElseThrow();
-        Group group = groupRepository.findById(request.getGroupId()).orElseThrow();
+        List<User> participants = new ArrayList<>(group.getMembers());
+        if (participants.isEmpty()) {
+            throw new IllegalArgumentException("A group must have at least one member before adding an expense");
+        }
 
         Expense expense = new Expense();
-        expense.setDescription(request.getDescription());
+        expense.setDescription(request.getDescription().trim());
         expense.setAmount(request.getAmount());
         expense.setPaidBy(paidByUser);
         expense.setGroup(group);
-
+        expense.setCreatedBy(currentUser);
         Expense savedExpense = expenseRepository.save(expense);
-
-        List<User> members = group.getMembers();
-        double splitAmount = request.getAmount() / members.size();
-
-        for (User user : members) {
-            Split split = new Split();
-            split.setExpense(savedExpense);
-            split.setUser(user);
-            split.setAmountOwed(splitAmount);
-
-            if (user.getId().equals(paidByUser.getId())) {
-                split.setAmountPaid(request.getAmount());
-            } else {
-                split.setAmountPaid(0.0);
-            }
-
-            splitRepository.save(split);
-        }
-
+        createSplits(savedExpense, participants);
         return savedExpense;
     }
 
+    @Transactional(readOnly = true)
+    @PreAuthorize("@groupAccessService.canViewExpense(#expenseId, authentication.name)")
+    public Expense getExpense(Long expenseId) {
+        Expense expense = findExpense(expenseId);
+        groupAccessService.requireMember(expense.getGroup(), groupAccessService.currentUser());
+        return expense;
+    }
+
+    @Transactional(readOnly = true)
+    @PreAuthorize("@groupAccessService.isMember(#groupId, authentication.name)")
     public List<Expense> getGroupExpenses(Long groupId) {
+        groupAccessService.requireMember(groupId);
         return expenseRepository.findByGroupId(groupId);
     }
-    
+
+    @Transactional(readOnly = true)
+    @PreAuthorize("@groupAccessService.isMember(#groupId, authentication.name)")
     public List<SettlementResponse> calculateSettlements(Long groupId) {
-
+        groupAccessService.requireMember(groupId);
         List<Split> splits = splitRepository.findByExpenseGroupId(groupId);
-
-        Map<User, Double> balanceMap = new HashMap<>();
+        Map<User, Double> balances = new HashMap<>();
 
         for (Split split : splits) {
-            double paid = split.getAmountPaid();
-            double owed = split.getAmountOwed();
-            double net = paid - owed;
-
-            balanceMap.put(split.getUser(),
-                    balanceMap.getOrDefault(split.getUser(), 0.0) + net);
+            double net = split.getAmountPaid() - split.getAmountOwed();
+            balances.put(split.getUser(), balances.getOrDefault(split.getUser(), 0.0) + net);
         }
 
         List<Map.Entry<User, Double>> creditors = new ArrayList<>();
         List<Map.Entry<User, Double>> debtors = new ArrayList<>();
-
-        for (Map.Entry<User, Double> entry : balanceMap.entrySet()) {
-            double value = entry.getValue();
-
-            if (value > 0.0) {
+        for (Map.Entry<User, Double> entry : balances.entrySet()) {
+            if (entry.getValue() > 0.0001) {
                 creditors.add(entry);
-            } else if (value < 0.0) {
+            } else if (entry.getValue() < -0.0001) {
                 debtors.add(entry);
             }
         }
 
         List<SettlementResponse> result = new ArrayList<>();
-
-        int i = 0;
-        int j = 0;
-
-        while (i < debtors.size() && j < creditors.size()) {
-            Map.Entry<User, Double> debtor = debtors.get(i);
-            Map.Entry<User, Double> creditor = creditors.get(j);
-
-            double debtAmount = -debtor.getValue();
-            double creditAmount = creditor.getValue();
-
-            double settledAmount = Math.min(debtAmount, creditAmount);
+        int debtorIndex = 0;
+        int creditorIndex = 0;
+        while (debtorIndex < debtors.size() && creditorIndex < creditors.size()) {
+            Map.Entry<User, Double> debtor = debtors.get(debtorIndex);
+            Map.Entry<User, Double> creditor = creditors.get(creditorIndex);
+            double settledAmount = Math.min(-debtor.getValue(), creditor.getValue());
 
             result.add(new SettlementResponse(
-                    debtor.getKey().getName(),
-                    creditor.getKey().getName(),
-                    settledAmount
-            ));
-
+                    debtor.getKey().getName(), creditor.getKey().getName(), settledAmount));
             debtor.setValue(debtor.getValue() + settledAmount);
             creditor.setValue(creditor.getValue() - settledAmount);
-
-            if (Math.abs(debtor.getValue()) < 0.0001) {
-                i++;
-            }
-
-            if (Math.abs(creditor.getValue()) < 0.0001) {
-                j++;
-            }
+            if (Math.abs(debtor.getValue()) < 0.0001) debtorIndex++;
+            if (Math.abs(creditor.getValue()) < 0.0001) creditorIndex++;
         }
-
         return result;
     }
-    
+
+    @Transactional
+    @PreAuthorize("@groupAccessService.canManageExpense(#expenseId, authentication.name)")
     public Expense updateExpense(Long expenseId, ExpenseRequest request) {
+        validateRequest(request);
+        Expense expense = findExpense(expenseId);
+        User currentUser = groupAccessService.currentUser();
+        groupAccessService.requireExpenseManager(expense, currentUser);
 
-        Expense expense = expenseRepository.findById(expenseId).orElseThrow();
+        if (!expense.getGroup().getId().equals(request.getGroupId())) {
+            throw new IllegalArgumentException("An expense cannot be moved to another group");
+        }
+        User paidByUser = findUser(request.getPaidByUserId());
+        requireMember(expense.getGroup(), paidByUser, "The payer must be a group member");
 
-        User paidByUser = userRepository.findById(request.getPaidByUserId()).orElseThrow();
-        Group group = groupRepository.findById(request.getGroupId()).orElseThrow();
-
-        expense.setDescription(request.getDescription());
-        expense.setAmount(request.getAmount());
-        expense.setPaidBy(paidByUser);
-        expense.setGroup(group);
-
-        Expense updatedExpense = expenseRepository.save(expense);
-
-        // delete old split rows of this expense
+        // Keep the original split participants so future joiners never inherit old expenses.
         List<Split> oldSplits = splitRepository.findByExpenseId(expenseId);
-        splitRepository.deleteAll(oldSplits);
-
-        // create fresh split rows
-        List<User> members = group.getMembers();
-        double splitAmount = request.getAmount() / members.size();
-
-        for (User user : members) {
-            Split split = new Split();
-            split.setExpense(updatedExpense);
-            split.setUser(user);
-            split.setAmountOwed(splitAmount);
-
-            if (user.getId().equals(paidByUser.getId())) {
-                split.setAmountPaid(request.getAmount());
-            } else {
-                split.setAmountPaid(0.0);
-            }
-
-            splitRepository.save(split);
+        List<User> participants = oldSplits.stream().map(Split::getUser).toList();
+        if (participants.isEmpty()) {
+            throw new IllegalArgumentException("Expense has no split participants");
         }
 
-        return updatedExpense;
+        expense.setDescription(request.getDescription().trim());
+        expense.setAmount(request.getAmount());
+        expense.setPaidBy(paidByUser);
+        splitRepository.deleteAll(oldSplits);
+        createSplits(expense, participants);
+        return expense;
     }
 
-    public String deleteExpense(Long expenseId) {
+    @Transactional
+    @PreAuthorize("@groupAccessService.canManageExpense(#expenseId, authentication.name)")
+    public void deleteExpense(Long expenseId) {
+        Expense expense = findExpense(expenseId);
+        groupAccessService.requireExpenseManager(expense, groupAccessService.currentUser());
+        splitRepository.deleteAll(splitRepository.findByExpenseId(expenseId));
+        expenseRepository.delete(expense);
+    }
 
-        List<Split> splits = splitRepository.findByExpenseId(expenseId);
-        splitRepository.deleteAll(splits);
+    private void createSplits(Expense expense, List<User> participants) {
+        double splitAmount = expense.getAmount() / participants.size();
+        for (User user : participants) {
+            Split split = new Split();
+            split.setExpense(expense);
+            split.setUser(user);
+            split.setAmountOwed(splitAmount);
+            split.setAmountPaid(user.getId().equals(expense.getPaidBy().getId()) ? expense.getAmount() : 0.0);
+            splitRepository.save(split);
+        }
+    }
 
-        expenseRepository.deleteById(expenseId);
+    private Expense findExpense(Long expenseId) {
+        return expenseRepository.findById(expenseId)
+                .orElseThrow(() -> new NoSuchElementException("Expense not found"));
+    }
 
-        return "Expense deleted successfully";
+    private User findUser(Long userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new NoSuchElementException("User not found"));
+    }
+
+    private void requireMember(Group group, User user, String message) {
+        boolean member = group.getMembers().stream().anyMatch(candidate -> candidate.getId().equals(user.getId()));
+        if (!member) throw new IllegalArgumentException(message);
+    }
+
+    private void validateRequest(ExpenseRequest request) {
+        if (request == null || request.getDescription() == null || request.getDescription().isBlank()) {
+            throw new IllegalArgumentException("Expense description is required");
+        }
+        if (request.getAmount() == null || !Double.isFinite(request.getAmount()) || request.getAmount() <= 0) {
+            throw new IllegalArgumentException("Expense amount must be positive");
+        }
+        if (request.getGroupId() == null || request.getPaidByUserId() == null) {
+            throw new IllegalArgumentException("Group id and payer id are required");
+        }
     }
 }

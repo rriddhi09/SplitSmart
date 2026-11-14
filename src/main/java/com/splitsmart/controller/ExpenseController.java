@@ -1,45 +1,48 @@
 package com.splitsmart.controller;
 
-import java.util.List;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.*;
-
 import com.splitsmart.dto.ExpenseRequest;
+import com.splitsmart.dto.SettlementResponse;
 import com.splitsmart.entity.Expense;
 import com.splitsmart.service.ExpenseService;
-import com.splitsmart.dto.SettlementResponse;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/expenses")
 public class ExpenseController {
+    private final ExpenseService expenseService;
 
-    @Autowired
-    private ExpenseService expenseService;
+    public ExpenseController(ExpenseService expenseService) {
+        this.expenseService = expenseService;
+    }
 
     @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
     public Expense addExpense(@RequestBody ExpenseRequest request) {
         return expenseService.addExpense(request);
     }
+
+    @GetMapping("/{expenseId}")
+    public Expense getExpense(@PathVariable Long expenseId) { return expenseService.getExpense(expenseId); }
 
     @GetMapping("/group/{groupId}")
     public List<Expense> getGroupExpenses(@PathVariable Long groupId) {
         return expenseService.getGroupExpenses(groupId);
     }
-    
+
     @GetMapping("/settlements/{groupId}")
     public List<SettlementResponse> getSettlements(@PathVariable Long groupId) {
         return expenseService.calculateSettlements(groupId);
     }
-    
+
     @PutMapping("/{expenseId}")
-    public Expense updateExpense(@PathVariable Long expenseId,
-                                 @RequestBody ExpenseRequest request) {
+    public Expense updateExpense(@PathVariable Long expenseId, @RequestBody ExpenseRequest request) {
         return expenseService.updateExpense(expenseId, request);
     }
 
     @DeleteMapping("/{expenseId}")
-    public String deleteExpense(@PathVariable Long expenseId) {
-        return expenseService.deleteExpense(expenseId);
-    }
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteExpense(@PathVariable Long expenseId) { expenseService.deleteExpense(expenseId); }
 }

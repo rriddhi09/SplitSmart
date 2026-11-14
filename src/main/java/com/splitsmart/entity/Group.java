@@ -14,6 +14,12 @@ public class Group {
 
     private String name;
 
+    // Nullable only to keep existing groups usable after this field is introduced.
+    // Every newly created group receives an owner in GroupService.
+    @ManyToOne
+    @JoinColumn(name = "owner_id")
+    private User owner;
+
     @ManyToMany
     @JoinTable(
         name = "group_members",
@@ -40,6 +46,14 @@ public class Group {
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public User getOwner() {
+        return owner;
+    }
+
+    public void setOwner(User owner) {
+        this.owner = owner;
     }
 
     public List<User> getMembers() {

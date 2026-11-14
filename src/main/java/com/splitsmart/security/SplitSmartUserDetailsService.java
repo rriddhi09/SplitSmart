@@ -2,7 +2,6 @@ package com.splitsmart.security;
 
 import com.splitsmart.entity.User;
 import com.splitsmart.repository.UserRepository;
-import lombok.AllArgsConstructor;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -12,10 +11,13 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 @Service
-@AllArgsConstructor
 public class SplitSmartUserDetailsService implements UserDetailsService {
 
     private final UserRepository userRepository;
+
+    public SplitSmartUserDetailsService(UserRepository userRepository) {
+        this.userRepository = userRepository;
+    }
 
     @Override
     public UserDetails loadUserByUsername(String email)

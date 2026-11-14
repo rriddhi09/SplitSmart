@@ -22,6 +22,11 @@ public class Expense {
     @JoinColumn(name = "group_id")
     private Group group;
 
+    // Nullable only for expenses created before this field existed.
+    @ManyToOne
+    @JoinColumn(name = "created_by")
+    private User createdBy;
+
     public Expense() {
     }
 
@@ -63,5 +68,13 @@ public class Expense {
 
     public void setGroup(Group group) {
         this.group = group;
+    }
+
+    public User getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(User createdBy) {
+        this.createdBy = createdBy;
     }
 }

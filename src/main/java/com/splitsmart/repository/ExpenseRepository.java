@@ -9,4 +9,6 @@ import com.splitsmart.entity.Expense;
 public interface ExpenseRepository extends JpaRepository<Expense, Long> {
 
     List<Expense> findByGroupId(Long groupId);
+
+    boolean existsByGroupId(Long groupId);
 }
